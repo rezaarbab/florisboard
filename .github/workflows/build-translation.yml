@@ -28,9 +28,21 @@ jobs:
           set +e
           ./gradlew assembleDebug --stacktrace > build.log 2>&1
           exit_code=$?
-          grep -E "^e: " build.log | head -100 | while IFS= read -r line; do
-            echo "::error::${line}"
-          done
+          python3 - <<'PY'
+          import pathlib
+          log = pathlib.Path('build.log')
+          lines = log.read_text(encoding='utf-8', errors='replace').splitlines() if log.exists() else []
+          picked = []
+          for i, line in enumerate(lines):
+              if 'What went wrong' in line:
+                  picked.extend(lines[i:i + 10])
+                  break
+          picked.extend([l for l in lines if l.startswith('e: ')][:6])
+          if not picked:
+              picked = lines[-15:]
+          for line in picked[:10]:
+              print('::error::' + line.strip()[:600])
+          PY
           tail -60 build.log
           exit $exit_code
       - uses: actions/upload-artifact@v4
