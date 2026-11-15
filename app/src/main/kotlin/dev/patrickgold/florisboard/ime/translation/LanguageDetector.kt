@@ -18,22 +18,16 @@ package dev.patrickgold.florisboard.ime.translation
 
 import com.google.android.gms.tasks.Task
 import com.google.mlkit.nl.languageid.LanguageIdentification
-import com.google.mlkit.nl.languageid.LanguageIdentificationOptions
 import kotlinx.coroutines.suspendCancellableCoroutine
 
 /**
  * Thin wrapper around the ML Kit language identification client.
  */
 object LanguageDetector {
-    private const val MIN_CONFIDENCE = 0.3f
     private const val UNDETERMINED_LANGUAGE_TAG = "und"
 
     private val client by lazy {
-        LanguageIdentification.getClient(
-            LanguageIdentificationOptions.Builder()
-                .setMinimumConfidence(MIN_CONFIDENCE)
-                .build()
-        )
+        LanguageIdentification.getClient()
     }
 
     /**
