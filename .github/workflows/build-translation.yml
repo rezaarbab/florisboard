@@ -24,8 +24,22 @@ jobs:
         uses: lukka/get-cmake@v4.0.2
       - uses: gradle/actions/setup-gradle@v4
       - name: Build debug APK
-        run: ./gradlew assembleDebug --stacktrace
+        run: |
+          set +e
+          ./gradlew assembleDebug --stacktrace > build.log 2>&1
+          exit_code=$?
+          grep -E "^e: " build.log | head -100 | while IFS= read -r line; do
+            echo "::error::${line}"
+          done
+          tail -60 build.log
+          exit $exit_code
       - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: florisboard-translation-build-log
+          path: build.log
+      - uses: actions/upload-artifact@v4
+        if: success()
         with:
           name: florisboard-translation-debug.apk
           path: app/build/outputs/apk/debug/app-debug.apk
