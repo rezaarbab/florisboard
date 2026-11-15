@@ -22,6 +22,7 @@ import android.text.TextUtils
 import android.view.KeyEvent
 import android.view.inputmethod.InputConnection
 import androidx.compose.runtime.staticCompositionLocalOf
+import dev.patrickgold.florisboard.FlorisApplication
 import dev.patrickgold.florisboard.FlorisImeService
 import dev.patrickgold.florisboard.app.FlorisPreferenceStore
 import dev.patrickgold.florisboard.ime.ImeUiMode
@@ -46,6 +47,7 @@ import dev.patrickgold.florisboard.ime.nlp.BreakIterators
 import dev.patrickgold.florisboard.ime.nlp.ClipboardSuggestionCandidate
 import dev.patrickgold.florisboard.ime.nlp.SuggestionCandidate
 import dev.patrickgold.florisboard.ime.text.key.KeyVariation
+import dev.patrickgold.florisboard.ime.translation.TranslationManager
 import dev.patrickgold.florisboard.lib.FlorisLocale
 import dev.patrickgold.florisboard.lib.devtools.flogDebug
 import kotlinx.coroutines.CoroutineScope
@@ -416,6 +418,7 @@ class ImeController(
                 ImeActions.CompactLayoutToLeft -> windowController?.actions?.compactLayoutToLeft()
                 ImeActions.CompactLayoutToRight -> windowController?.actions?.compactLayoutToRight()
                 ImeActions.ExternalVoiceInput -> FlorisImeService.switchToVoiceInputMethod()
+                ImeActions.Translate -> emitTranslate()
                 else -> super.emitDescriptor(descriptor)
             }
             reevaluateInputShiftState()
@@ -456,6 +459,54 @@ class ImeController(
 
         fun emitEnterAction(action: ImeOptions.Action) {
             state.editor.performEditorAction(action)
+        }
+
+        fun emitTranslate() {
+            val selection = state.content.selection
+            val source = state.editor.getSurroundingText(charsBefore = TranslationManager.MAX_TEXT_LENGTH, charsAfter = 0)
+            val isSelection = selection.isNotCollapsed()
+            val selectionStart = minOf(selection.start, selection.end)
+            val selectionEnd = maxOf(selection.start, selection.end)
+
+            val sourceText: String
+            val rangeStart: Int
+            val rangeEnd: Int
+            if (isSelection) {
+                sourceText = source.textSelected
+                rangeStart = selectionStart
+                rangeEnd = selectionStart + sourceText.length
+            } else {
+                val windowLength = source.textBefore.length.coerceAtMost(TranslationManager.MAX_TEXT_LENGTH)
+                val window = source.textBefore.takeLast(windowLength)
+                val trimmed = window.trimStart()
+                sourceText = trimmed
+                rangeStart = selectionStart - windowLength + (window.length - trimmed.length)
+                rangeEnd = selectionStart
+            }
+            if (sourceText.isBlank()) {
+                return
+            }
+
+            val expectedSelection = selection
+            FlorisApplication.getHack().translationManager.value.toggle(sourceText) { translated ->
+                var applied = false
+                updateStateBlocking {
+                    val currentSelection = state.content.selection
+                    if (currentSelection.start == expectedSelection.start &&
+                        currentSelection.end == expectedSelection.end
+                    ) {
+                        val newCaret = rangeStart + translated.length
+                        state.editor.replaceText(
+                            range = rangeStart until rangeEnd,
+                            text = translated,
+                            newSelection = K3TextRange(newCaret, newCaret),
+                            newComposition = null,
+                        )
+                        applied = true
+                    }
+                }
+                applied
+            }
         }
 
         fun emitForwardDelete() {

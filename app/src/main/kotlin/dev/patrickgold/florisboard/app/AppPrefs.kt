@@ -553,6 +553,18 @@ abstract class FlorisPreferenceModel : PreferenceModel() {
         )
     }
 
+    val translation = Translation()
+    inner class Translation {
+        val enabled = boolean(
+            key = "translation__enabled",
+            default = true,
+        )
+        val targetLanguage = string(
+            key = "translation__target_language",
+            default = "fa",
+        )
+    }
+
     val physicalKeyboard = PhysicalKeyboard()
     inner class PhysicalKeyboard {
         val showOnScreenKeyboard = boolean(

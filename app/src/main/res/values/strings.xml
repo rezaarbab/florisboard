@@ -93,6 +93,18 @@
     <string name="quick_action__toggle_autocorrect__tooltip">Toggle autocorrect</string>
     <string name="quick_action__voice_input" comment="Please mind the limited available space for the quick action strings">Voice input</string>
     <string name="quick_action__voice_input__tooltip" comment="IME stands for Input Method Editor and is indirectly equivalent to 'keyboard'.">Open voice input provider</string>
+    <string name="quick_action__translate" comment="Please mind the limited available space for the quick action strings">Translate</string>
+    <string name="quick_action__translate__tooltip">Translate the text before the cursor or the current selection</string>
+
+    <string name="translation__bar__detecting_language">Detecting language…</string>
+    <string name="translation__bar__downloading_model">Downloading translation model…</string>
+    <string name="translation__bar__translating">Translating…</string>
+    <string name="translation__failure__no_text">Nothing to translate</string>
+    <string name="translation__failure__source_language">Source language not supported</string>
+    <string name="translation__failure__target_language">Target language not supported</string>
+    <string name="translation__failure__same_language">Source and target language are identical</string>
+    <string name="translation__failure__model_unavailable">Translation model unavailable, check your connection</string>
+    <string name="translation__failure__text_changed">Text changed, translation discarded</string>
     <string name="quick_action__floating_window_mode" comment="Please mind the limited available space for the quick action strings">Floating</string>
     <string name="quick_action__floating_window_mode__tooltip">Toggle floating keyboard window mode</string>
     <string name="quick_action__one_handed_mode" comment="Please mind the limited available space for the quick action strings">One-handed</string>
@@ -463,6 +475,13 @@
 
     <!-- Smartbar strings -->
     <string name="settings__smartbar__title" comment="Title of Smartbar screen">Smartbar</string>
+    <string name="settings__translation__title" comment="Title of Translation screen">Translation</string>
+    <string name="pref__translation__enabled__label" comment="Preference title">Enable translation</string>
+    <string name="pref__translation__enabled__summary" comment="Preference summary">Shows a translation bar above the keyboard when translating</string>
+    <string name="pref__translation__target_language__label" comment="Preference title">Target language</string>
+    <string name="pref__translation__target_language__summary" comment="Preference summary">Language the text gets translated to</string>
+    <string name="translation__target_language__dialog_title">Target language</string>
+    <string name="translation__target_language__download_notice">Translation models are downloaded on demand and work offline afterwards</string>
     <string name="pref__smartbar__enabled__label" comment="Preference title">Enable smartbar</string>
     <string name="pref__smartbar__enabled__summary" comment="Preference summary">Will show on top of the keyboard</string>
     <string name="pref__smartbar__layout__label" comment="Preference title">Layout</string>

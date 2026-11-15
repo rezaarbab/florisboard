@@ -71,6 +71,7 @@ object ImeActions {
     val TogglePersonalizedLearning = flAction("toggle_personalized_learning")
 
     val ExternalVoiceInput = flAction("external_voice_input")
+    val Translate = flAction("translate")
 
     val NoopDragMarker = flAction("noop_drag_marker")
     val NoopSpacer = flAction("noop_spacer")

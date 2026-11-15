@@ -52,6 +52,7 @@ object ImeIcons {
     val ToggleCompactLayout = flIcon("toggle_compact_layout")
     val ToggleFloatingWindow = flIcon("toggle_floating_window")
     val ToggleResizeMode = flIcon("toggle_resize_mode")
+    val Translate = flIcon("translate")
     val Undo = flIcon("undo")
     val Voice = flIcon("voice")
 

@@ -41,6 +41,7 @@ import dev.patrickgold.florisboard.ime.nlp.NlpManager
 import dev.patrickgold.florisboard.ime.text.gestures.GlideTypingManager
 import dev.patrickgold.florisboard.ime.theme.SystemThemeMode
 import dev.patrickgold.florisboard.ime.theme.ThemeController
+import dev.patrickgold.florisboard.ime.translation.TranslationManager
 import dev.patrickgold.florisboard.lib.crashutility.CrashUtility
 import dev.patrickgold.florisboard.lib.devtools.Flog
 import dev.patrickgold.florisboard.lib.devtools.LogTopic
@@ -89,6 +90,7 @@ class FlorisApplication : Application() {
     val glideTypingManager = lazy { GlideTypingManager(this) }
     val nlpManager = lazy { NlpManager(this) }
     val subtypeManager = lazy { SubtypeManager(this) }
+    val translationManager = lazy { TranslationManager() }
 
     override fun onCreate() {
         super.onCreate()
@@ -199,3 +201,5 @@ fun Context.glideTypingManager() = this.inferFlorisApplication().glideTypingMana
 fun Context.nlpManager() = this.inferFlorisApplication().nlpManager
 
 fun Context.subtypeManager() = this.inferFlorisApplication().subtypeManager
+
+fun Context.translationManager() = this.inferFlorisApplication().translationManager
