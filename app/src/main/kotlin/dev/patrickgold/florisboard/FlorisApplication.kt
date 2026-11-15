@@ -90,7 +90,7 @@ class FlorisApplication : Application() {
     val glideTypingManager = lazy { GlideTypingManager(this) }
     val nlpManager = lazy { NlpManager(this) }
     val subtypeManager = lazy { SubtypeManager(this) }
-    val translationManager = lazy { TranslationManager() }
+    val translationManager = lazy { TranslationManager(this) }
 
     override fun onCreate() {
         super.onCreate()

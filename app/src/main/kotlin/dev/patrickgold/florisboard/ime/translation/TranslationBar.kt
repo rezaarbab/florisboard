@@ -88,6 +88,7 @@ fun TranslationBar(modifier: Modifier = Modifier) {
                     TranslationFailure.ModelUnavailable -> R.string.translation__failure__model_unavailable
                     TranslationFailure.TextChanged -> R.string.translation__failure__text_changed
                 }),
+                caption = state.detail?.elide(),
                 onDismiss = manager::dismiss,
             )
             TranslationUiState.Hidden -> Unit

@@ -16,6 +16,9 @@
 
 package dev.patrickgold.florisboard.ime.translation
 
+import android.content.Context
+import com.google.android.gms.common.ConnectionResult
+import com.google.android.gms.common.GoogleApiAvailability
 import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.Translation
@@ -25,10 +28,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.cancellation.CancellationException
 
 sealed interface TranslationUiState {
@@ -41,7 +46,7 @@ sealed interface TranslationUiState {
         val targetLanguageTag: String,
         val onApply: (String) -> Boolean,
     ) : TranslationUiState
-    data class Failed(val failure: TranslationFailure) : TranslationUiState
+    data class Failed(val failure: TranslationFailure, val detail: String? = null) : TranslationUiState
 }
 
 enum class TranslationPhase {
@@ -63,7 +68,7 @@ enum class TranslationFailure {
  * Owns the on-device translation pipeline (language detection -> model download -> translation)
  * and exposes its progress to the [TranslationBar].
  */
-class TranslationManager {
+class TranslationManager(private val context: Context) {
     private val prefs by FlorisPreferenceStore
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val _state = MutableStateFlow<TranslationUiState>(TranslationUiState.Hidden)
@@ -91,6 +96,15 @@ class TranslationManager {
             _state.value = TranslationUiState.Failed(TranslationFailure.TargetLanguageNotSupported)
             return
         }
+        val gmsStatus = GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(context)
+        if (gmsStatus != ConnectionResult.SUCCESS) {
+            val reason = GoogleApiAvailability.getInstance().getErrorString(gmsStatus)
+            _state.value = TranslationUiState.Failed(
+                TranslationFailure.ModelUnavailable,
+                detail = "Play services: $gmsStatus ($reason)",
+            )
+            return
+        }
         job = scope.launch {
             try {
                 _state.value = TranslationUiState.Busy(TranslationPhase.DetectingLanguage)
@@ -112,7 +126,17 @@ class TranslationManager {
                     .build()
                 val translator = Translation.getClient(options)
                 try {
-                    translator.downloadModelIfNeeded(DownloadConditions.Builder().build()).awaitResult()
+                    try {
+                        withTimeout(MODEL_DOWNLOAD_TIMEOUT_MS) {
+                            translator.downloadModelIfNeeded(DownloadConditions.Builder().build()).awaitResult()
+                        }
+                    } catch (_: TimeoutCancellationException) {
+                        _state.value = TranslationUiState.Failed(
+                            TranslationFailure.ModelUnavailable,
+                            detail = "download timed out after ${MODEL_DOWNLOAD_TIMEOUT_MS / 1000}s",
+                        )
+                        return@launch
+                    }
                     _state.value = TranslationUiState.Busy(TranslationPhase.Translating)
                     val translated = translator.translate(sourceText).awaitResult()
                     _state.value = TranslationUiState.Ready(
@@ -127,8 +151,11 @@ class TranslationManager {
                 }
             } catch (e: CancellationException) {
                 throw e
-            } catch (_: Exception) {
-                _state.value = TranslationUiState.Failed(TranslationFailure.ModelUnavailable)
+            } catch (e: Exception) {
+                _state.value = TranslationUiState.Failed(
+                    TranslationFailure.ModelUnavailable,
+                    detail = "${e.javaClass.simpleName}: ${e.message}",
+                )
             }
         }
     }
@@ -150,5 +177,7 @@ class TranslationManager {
 
     companion object {
         const val MAX_TEXT_LENGTH = 400
+
+        private const val MODEL_DOWNLOAD_TIMEOUT_MS = 120_000L
     }
 }
