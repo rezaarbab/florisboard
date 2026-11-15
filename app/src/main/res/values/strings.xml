@@ -99,6 +99,8 @@
     <string name="translation__bar__detecting_language">Detecting language…</string>
     <string name="translation__bar__downloading_model">Downloading translation model…</string>
     <string name="translation__bar__translating">Translating…</string>
+    <string name="translation__bar__live">LIVE</string>
+    <string name="translation__bar__live_hint">Type to translate automatically</string>
     <string name="translation__failure__no_text">Nothing to translate</string>
     <string name="translation__failure__source_language">Source language not supported</string>
     <string name="translation__failure__target_language">Target language not supported</string>

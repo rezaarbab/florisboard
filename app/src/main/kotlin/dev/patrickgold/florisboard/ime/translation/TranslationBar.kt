@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -70,14 +69,18 @@ fun TranslationBar(modifier: Modifier = Modifier) {
                     TranslationPhase.DownloadingModel -> R.string.translation__bar__downloading_model
                     TranslationPhase.Translating -> R.string.translation__bar__translating
                 }),
-                onDismiss = manager::dismiss,
+                onDismiss = manager::hide,
             )
-            is TranslationUiState.Ready -> TranslationBarRow(
-                text = state.translation.elide(),
-                caption = "${state.sourceLanguageTag.uppercase(Locale.ROOT)} → " +
-                    "${state.targetLanguageTag.uppercase(Locale.ROOT)} · ${state.original.elide()}",
-                onApply = manager::apply,
-                onDismiss = manager::dismiss,
+            is TranslationUiState.Live -> TranslationBarRow(
+                text = state.original.ifBlank { stringRes(R.string.translation__bar__live_hint) }.elide(),
+                caption = if (state.sourceLanguageTag.isBlank()) {
+                    stringRes(R.string.translation__bar__live)
+                } else {
+                    stringRes(R.string.translation__bar__live) +
+                        " · ${state.sourceLanguageTag.uppercase(Locale.ROOT)} → " +
+                        state.targetLanguageTag.uppercase(Locale.ROOT)
+                },
+                onDismiss = manager::stopLive,
             )
             is TranslationUiState.Failed -> TranslationBarRow(
                 text = stringRes(when (state.failure) {
@@ -89,7 +92,7 @@ fun TranslationBar(modifier: Modifier = Modifier) {
                     TranslationFailure.TextChanged -> R.string.translation__failure__text_changed
                 }),
                 caption = state.detail?.elide(),
-                onDismiss = manager::dismiss,
+                onDismiss = manager::hide,
             )
             TranslationUiState.Hidden -> Unit
         }
@@ -100,7 +103,6 @@ fun TranslationBar(modifier: Modifier = Modifier) {
 private fun TranslationBarRow(
     text: String,
     caption: String? = null,
-    onApply: (() -> Unit)? = null,
     onDismiss: () -> Unit,
 ) {
     SnyggRow(
@@ -124,11 +126,6 @@ private fun TranslationBarRow(
                     elementName = FlorisImeUi.SmartbarCandidateWordText.elementName,
                     text = caption,
                 )
-            }
-        }
-        if (onApply != null) {
-            BarIconButton(onClick = onApply) {
-                SnyggIcon(imageVector = Icons.Default.Check)
             }
         }
         BarIconButton(onClick = onDismiss) {

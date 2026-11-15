@@ -47,12 +47,17 @@ import dev.patrickgold.florisboard.ime.nlp.BreakIterators
 import dev.patrickgold.florisboard.ime.nlp.ClipboardSuggestionCandidate
 import dev.patrickgold.florisboard.ime.nlp.SuggestionCandidate
 import dev.patrickgold.florisboard.ime.text.key.KeyVariation
+import dev.patrickgold.florisboard.ime.translation.TranslationFailure
 import dev.patrickgold.florisboard.ime.translation.TranslationManager
+import dev.patrickgold.florisboard.ime.translation.TranslationOutcome
+import dev.patrickgold.florisboard.ime.translation.TranslationPhase
 import dev.patrickgold.florisboard.lib.FlorisLocale
 import dev.patrickgold.florisboard.lib.devtools.flogDebug
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
@@ -73,6 +78,7 @@ import org.k3lp.runtime.K3TextRange
 import java.lang.ref.WeakReference
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Provides the [ImeController] instance this composition tree is associated with.
@@ -92,6 +98,11 @@ class ImeController(
 ) {
     private val prefs by FlorisPreferenceStore
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private val liveScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private var liveFlushJob: Job? = null
+    @Volatile private var liveSegmentStart = -1
+    @Volatile private var liveSegmentEnd = -1
+    @Volatile private var liveSource = StringBuilder()
     private val breakIterators = BreakIterators()
     private val expectedContentQueue = ExpectedContentQueue()
     private var emitInterceptor = AtomicReference<EmitInterceptor?>(null)
@@ -183,6 +194,92 @@ class ImeController(
 
     fun snapshotState(): ImeState = activeState.value
 
+    private fun resetLiveSession() {
+        liveFlushJob?.cancel()
+        liveFlushJob = null
+        liveSegmentStart = -1
+        liveSegmentEnd = -1
+        liveSource = StringBuilder()
+    }
+
+    private fun scheduleLiveFlush() {
+        liveFlushJob?.cancel()
+        liveFlushJob = liveScope.launch {
+            delay(LIVE_FLUSH_DELAY_MS)
+            try {
+                performLiveFlush()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                FlorisApplication.getHack().translationManager.value.showFailure(
+                    TranslationFailure.ModelUnavailable,
+                    detail = "${e.javaClass.simpleName}: ${e.message}",
+                )
+            }
+        }
+    }
+
+    private suspend fun performLiveFlush() {
+        val translationManager = FlorisApplication.getHack().translationManager.value
+        if (!translationManager.isLive()) return
+        val snapshot = snapshotState()
+        val cursor = snapshot.content.selection.start
+        if (liveSegmentStart < 0 || liveSegmentEnd < 0 || cursor < liveSegmentEnd) {
+            liveSegmentStart = cursor
+            liveSegmentEnd = cursor
+            liveSource = StringBuilder()
+            return
+        }
+        if (cursor == liveSegmentEnd) return
+        val textBefore = snapshot.editor.getSurroundingText(TranslationManager.MAX_TEXT_LENGTH, 0).textBefore
+        val chunkLength = cursor - liveSegmentEnd
+        if (chunkLength > textBefore.length) {
+            liveSegmentStart = cursor
+            liveSegmentEnd = cursor
+            liveSource = StringBuilder()
+            return
+        }
+        val chunk = textBefore.takeLast(chunkLength)
+        if (chunk.none { it.isLetter() }) return
+        val candidateSource = liveSource.toString() + chunk
+        val source = candidateSource.trimEnd()
+        val delimiter = candidateSource.substring(source.length)
+        if (source.isBlank()) return
+        val targetTag = prefs.translation.targetLanguage.get()
+        translationManager.showBusy(TranslationPhase.Translating)
+        when (val outcome = translationManager.translateSegments(source, targetTag)) {
+            is TranslationOutcome.Success -> {
+                val replacement = outcome.text + delimiter
+                val newEnd = liveSegmentStart + replacement.length
+                var applied = false
+                updateStateBlocking {
+                    if (state.content.selection.start == cursor) {
+                        state.editor.replaceText(
+                            range = liveSegmentStart until cursor,
+                            text = replacement,
+                            newSelection = K3TextRange(newEnd, newEnd),
+                            newComposition = null,
+                        )
+                        applied = true
+                    }
+                }
+                if (applied) {
+                    liveSource = StringBuilder(candidateSource)
+                    liveSegmentEnd = newEnd
+                    translationManager.showLive(source, outcome.sourceLanguageTag, targetTag)
+                } else {
+                    val currentCursor = snapshotState().content.selection.start
+                    liveSegmentStart = currentCursor
+                    liveSegmentEnd = currentCursor
+                    liveSource = StringBuilder()
+                }
+            }
+            is TranslationOutcome.Failure -> {
+                translationManager.showFailure(outcome.failure, outcome.detail)
+            }
+        }
+    }
+
     // TODO evaluate if we can move to a clean coroutine-based approach in FlorisBoard
     //  for now this helper can be used to update the state from non-suspending contexts
     inline fun updateStateBlocking(crossinline function: UpdateImeStateScope.() -> Unit) {
@@ -202,6 +299,7 @@ class ImeController(
             ic: WeakReference<InputConnection>,
             info: FlorisEditorInfo,
         ) {
+            resetLiveSession()
             val newTouchLayerId: K3LayerId
             val keyVariation: KeyVariation
             when (info.inputAttributes.type) {
@@ -322,6 +420,12 @@ class ImeController(
             super.emitText(value)
             expectedContentQueue.push(state.content)
             reevaluateInputShiftState()
+            val emitted = value.toText()
+            if (emitted.isNotEmpty() && isLiveDelimiter(emitted.last()) &&
+                FlorisApplication.getHack().translationManager.value.isLive()
+            ) {
+                scheduleLiveFlush()
+            }
         }
 
         override fun emitDescriptor(descriptor: K3Descriptor) {
@@ -418,7 +522,7 @@ class ImeController(
                 ImeActions.CompactLayoutToLeft -> windowController?.actions?.compactLayoutToLeft()
                 ImeActions.CompactLayoutToRight -> windowController?.actions?.compactLayoutToRight()
                 ImeActions.ExternalVoiceInput -> FlorisImeService.switchToVoiceInputMethod()
-                ImeActions.Translate -> emitTranslate()
+                ImeActions.Translate -> toggleLiveTranslation()
                 else -> super.emitDescriptor(descriptor)
             }
             reevaluateInputShiftState()
@@ -461,51 +565,21 @@ class ImeController(
             state.editor.performEditorAction(action)
         }
 
-        fun emitTranslate() {
-            val selection = state.content.selection
-            val source = state.editor.getSurroundingText(charsBefore = TranslationManager.MAX_TEXT_LENGTH, charsAfter = 0)
-            val isSelection = selection.isNotCollapsed()
-            val selectionStart = minOf(selection.start, selection.end)
-            val selectionEnd = maxOf(selection.start, selection.end)
-
-            val sourceText: String
-            val rangeStart: Int
-            val rangeEnd: Int
-            if (isSelection) {
-                sourceText = source.textSelected
-                rangeStart = selectionStart
-                rangeEnd = selectionStart + sourceText.length
-            } else {
-                val windowLength = source.textBefore.length.coerceAtMost(TranslationManager.MAX_TEXT_LENGTH)
-                val window = source.textBefore.takeLast(windowLength)
-                val trimmed = window.trimStart()
-                sourceText = trimmed
-                rangeStart = selectionStart - windowLength + (window.length - trimmed.length)
-                rangeEnd = selectionStart
-            }
-            if (sourceText.isBlank()) {
+        fun toggleLiveTranslation() {
+            if (!prefs.translation.enabled.get()) {
                 return
             }
-
-            val expectedSelection = selection
-            FlorisApplication.getHack().translationManager.value.toggle(sourceText) { translated ->
-                var applied = false
-                updateStateBlocking {
-                    val currentSelection = state.content.selection
-                    if (currentSelection.start == expectedSelection.start &&
-                        currentSelection.end == expectedSelection.end
-                    ) {
-                        val newCaret = rangeStart + translated.length
-                        state.editor.replaceText(
-                            range = rangeStart until rangeEnd,
-                            text = translated,
-                            newSelection = K3TextRange(newCaret, newCaret),
-                            newComposition = null,
-                        )
-                        applied = true
-                    }
-                }
-                applied
+            val translationManager = FlorisApplication.getHack().translationManager.value
+            if (translationManager.isLive()) {
+                translationManager.stopLive()
+                resetLiveSession()
+            } else {
+                resetLiveSession()
+                val cursor = state.content.selection.start
+                liveSegmentStart = cursor
+                liveSegmentEnd = cursor
+                translationManager.startLive()
+                translationManager.showLive("", "", prefs.translation.targetLanguage.get())
             }
         }
 
@@ -696,8 +770,12 @@ class ImeController(
     }
 
     companion object {
+        private const val LIVE_FLUSH_DELAY_MS = 150L
+        private val LIVE_DELIMITERS = setOf(' ', '\n', '.', ',', '!', '?', ';', ':', '،', '؛', '؟', '…')
         private val NEWLINE_SEQ = "\n".asK3String()
     }
+
+    private fun isLiveDelimiter(char: Char): Boolean = char in LIVE_DELIMITERS
 }
 
 enum class OperationUnit {

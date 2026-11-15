@@ -22,29 +22,24 @@ import com.google.android.gms.common.GoogleApiAvailability
 import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.Translation
+import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
-import dev.patrickgold.florisboard.app.FlorisPreferenceStore
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.cancellation.CancellationException
 
 sealed interface TranslationUiState {
     data object Hidden : TranslationUiState
     data class Busy(val phase: TranslationPhase) : TranslationUiState
-    data class Ready(
+    data class Live(
         val original: String,
-        val translation: String,
         val sourceLanguageTag: String,
         val targetLanguageTag: String,
-        val onApply: (String) -> Boolean,
     ) : TranslationUiState
     data class Failed(val failure: TranslationFailure, val detail: String? = null) : TranslationUiState
 }
@@ -59,125 +54,146 @@ enum class TranslationFailure {
     NoText,
     SourceLanguageNotSupported,
     TargetLanguageNotSupported,
-    SameLanguage,
     ModelUnavailable,
     TextChanged,
 }
 
+sealed interface TranslationOutcome {
+    data class Success(val text: String, val sourceLanguageTag: String) : TranslationOutcome
+    data class Failure(val failure: TranslationFailure, val detail: String? = null) : TranslationOutcome
+}
+
 /**
- * Owns the on-device translation pipeline (language detection -> model download -> translation)
- * and exposes its progress to the [TranslationBar].
+ * Owns the on-device translation pipeline and exposes its progress to the [TranslationBar].
+ *
+ * Text is split into runs of equal script. Runs which already use the target language's script
+ * (e.g. names written in Latin while translating to English) are kept verbatim, everything else
+ * gets translated. This keeps mixed-language sentences and proper nouns intact.
  */
 class TranslationManager(private val context: Context) {
-    private val prefs by FlorisPreferenceStore
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val _state = MutableStateFlow<TranslationUiState>(TranslationUiState.Hidden)
     val state: StateFlow<TranslationUiState> = _state.asStateFlow()
-    private var job: Job? = null
+    private val _live = MutableStateFlow(false)
+    val live: StateFlow<Boolean> = _live.asStateFlow()
+    private val translatorCache = mutableMapOf<String, Translator>()
+    private val cacheLock = Mutex()
 
-    fun toggle(text: String, onApply: (String) -> Boolean) {
-        if (_state.value != TranslationUiState.Hidden) {
-            dismiss()
-        } else {
-            translate(text, onApply)
-        }
+    fun isLive(): Boolean = _live.value
+
+    fun startLive() {
+        _live.value = true
+        _state.value = TranslationUiState.Hidden
     }
 
-    fun translate(text: String, onApply: (String) -> Boolean) {
-        job?.cancel()
-        val sourceText = text.trim().take(MAX_TEXT_LENGTH)
-        if (sourceText.isEmpty()) {
-            _state.value = TranslationUiState.Failed(TranslationFailure.NoText)
-            return
-        }
-        val targetTag = prefs.translation.targetLanguage.get()
+    fun stopLive() {
+        _live.value = false
+        _state.value = TranslationUiState.Hidden
+    }
+
+    fun showLive(original: String, sourceLanguageTag: String, targetLanguageTag: String) {
+        _state.value = TranslationUiState.Live(original, sourceLanguageTag, targetLanguageTag)
+    }
+
+    fun showBusy(phase: TranslationPhase) {
+        _state.value = TranslationUiState.Busy(phase)
+    }
+
+    fun showFailure(failure: TranslationFailure, detail: String?) {
+        _state.value = TranslationUiState.Failed(failure, detail)
+    }
+
+    fun hide() {
+        _state.value = TranslationUiState.Hidden
+    }
+
+    suspend fun translateSegments(text: String, targetTag: String): TranslationOutcome {
         val targetLanguage = TranslateLanguage.fromLanguageTag(targetTag)
-        if (targetLanguage == null) {
-            _state.value = TranslationUiState.Failed(TranslationFailure.TargetLanguageNotSupported)
-            return
-        }
+            ?: return TranslationOutcome.Failure(TranslationFailure.TargetLanguageNotSupported)
         val gmsStatus = GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(context)
         if (gmsStatus != ConnectionResult.SUCCESS) {
             val reason = GoogleApiAvailability.getInstance().getErrorString(gmsStatus)
-            _state.value = TranslationUiState.Failed(
+            return TranslationOutcome.Failure(
                 TranslationFailure.ModelUnavailable,
                 detail = "Play services: $gmsStatus ($reason)",
             )
-            return
         }
-        job = scope.launch {
+        val targetScripts = ScriptSegmenter.targetScriptsFor(targetTag)
+        val out = StringBuilder()
+        var position = 0
+        var lastSourceTag = targetTag
+        for (run in ScriptSegmenter.split(text)) {
+            out.append(text, position, run.start)
+            position = run.end
+            val sourceLanguage = runSourceLanguage(run.text, targetTag)
+            if (run.script in targetScripts || run.script == TextScript.OTHER ||
+                sourceLanguage == null || sourceLanguage == targetLanguage
+            ) {
+                out.append(run.text)
+                continue
+            }
             try {
-                _state.value = TranslationUiState.Busy(TranslationPhase.DetectingLanguage)
-                val detectedTag = LanguageDetector.detect(sourceText)
-                val sourceLanguage = detectedTag?.let { TranslateLanguage.fromLanguageTag(it) }
-                if (sourceLanguage == null) {
-                    _state.value = TranslationUiState.Failed(TranslationFailure.SourceLanguageNotSupported)
-                    return@launch
-                }
-                if (sourceLanguage == targetLanguage) {
-                    _state.value = TranslationUiState.Failed(TranslationFailure.SameLanguage)
-                    return@launch
-                }
-
-                _state.value = TranslationUiState.Busy(TranslationPhase.DownloadingModel)
-                val options = TranslatorOptions.Builder()
-                    .setSourceLanguage(sourceLanguage)
-                    .setTargetLanguage(targetLanguage)
-                    .build()
-                val translator = Translation.getClient(options)
-                try {
-                    try {
-                        withTimeout(MODEL_DOWNLOAD_TIMEOUT_MS) {
-                            translator.downloadModelIfNeeded(DownloadConditions.Builder().build()).awaitResult()
-                        }
-                    } catch (_: TimeoutCancellationException) {
-                        _state.value = TranslationUiState.Failed(
-                            TranslationFailure.ModelUnavailable,
-                            detail = "download timed out after ${MODEL_DOWNLOAD_TIMEOUT_MS / 1000}s",
-                        )
-                        return@launch
-                    }
-                    _state.value = TranslationUiState.Busy(TranslationPhase.Translating)
-                    val translated = translator.translate(sourceText).awaitResult()
-                    _state.value = TranslationUiState.Ready(
-                        original = sourceText,
-                        translation = translated,
-                        sourceLanguageTag = sourceLanguage,
-                        targetLanguageTag = targetLanguage,
-                        onApply = onApply,
-                    )
-                } finally {
-                    translator.close()
-                }
+                out.append(translateRun(run.text, sourceLanguage, targetLanguage))
+            } catch (e: TimeoutCancellationException) {
+                return TranslationOutcome.Failure(
+                    TranslationFailure.ModelUnavailable,
+                    detail = "download timed out after ${MODEL_DOWNLOAD_TIMEOUT_MS / 1000}s",
+                )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                _state.value = TranslationUiState.Failed(
+                return TranslationOutcome.Failure(
                     TranslationFailure.ModelUnavailable,
                     detail = "${e.javaClass.simpleName}: ${e.message}",
                 )
             }
+            lastSourceTag = sourceLanguage
         }
+        out.append(text, position, text.length)
+        return TranslationOutcome.Success(out.toString(), lastSourceTag)
     }
 
-    fun apply() {
-        val ready = _state.value as? TranslationUiState.Ready ?: return
-        _state.value = if (ready.onApply(ready.translation)) {
-            TranslationUiState.Hidden
-        } else {
-            TranslationUiState.Failed(TranslationFailure.TextChanged)
+    private suspend fun runSourceLanguage(text: String, targetTag: String): String? {
+        val detectedTag = LanguageDetector.detect(text)
+        val detected = detectedTag?.let { TranslateLanguage.fromLanguageTag(it) }
+        if (detected != null) {
+            return detected
         }
+        val fallbackTag = if (targetTag.equals("en", ignoreCase = true)) "fa" else "en"
+        return TranslateLanguage.fromLanguageTag(fallbackTag)
     }
 
-    fun dismiss() {
-        job?.cancel()
-        job = null
-        _state.value = TranslationUiState.Hidden
+    private suspend fun translateRun(text: String, sourceLanguage: String, targetLanguage: String): String {
+        val translator = translatorFor(sourceLanguage, targetLanguage)
+        withTimeout(MODEL_DOWNLOAD_TIMEOUT_MS) {
+            translator.downloadModelIfNeeded(DownloadConditions.Builder().build()).awaitResult()
+        }
+        return translator.translate(text).awaitResult()
+    }
+
+    private suspend fun translatorFor(sourceLanguage: String, targetLanguage: String): Translator {
+        val key = "$sourceLanguage|$targetLanguage"
+        return cacheLock.withLock {
+            translatorCache[key] ?: run {
+                if (translatorCache.size >= MAX_CACHED_TRANSLATORS) {
+                    val oldestKey = translatorCache.keys.first()
+                    translatorCache.remove(oldestKey)?.close()
+                }
+                val translator = Translation.getClient(
+                    TranslatorOptions.Builder()
+                        .setSourceLanguage(sourceLanguage)
+                        .setTargetLanguage(targetLanguage)
+                        .build()
+                )
+                translatorCache[key] = translator
+                translator
+            }
+        }
     }
 
     companion object {
         const val MAX_TEXT_LENGTH = 400
 
+        private const val MAX_CACHED_TRANSLATORS = 4
         private const val MODEL_DOWNLOAD_TIMEOUT_MS = 120_000L
     }
 }
