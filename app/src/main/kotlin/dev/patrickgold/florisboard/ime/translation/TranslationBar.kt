@@ -87,7 +87,6 @@ fun TranslationBar(modifier: Modifier = Modifier) {
                     TranslationFailure.NoText -> R.string.translation__failure__no_text
                     TranslationFailure.SourceLanguageNotSupported -> R.string.translation__failure__source_language
                     TranslationFailure.TargetLanguageNotSupported -> R.string.translation__failure__target_language
-                    TranslationFailure.SameLanguage -> R.string.translation__failure__same_language
                     TranslationFailure.ModelUnavailable -> R.string.translation__failure__model_unavailable
                     TranslationFailure.TextChanged -> R.string.translation__failure__text_changed
                 }),
